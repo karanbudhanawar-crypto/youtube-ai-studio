@@ -1,7 +1,7 @@
 from flask import Flask, render_template, request, send_file
 from pathlib import Path
 import os, re, subprocess, shutil, requests
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 app = Flask(__name__)
 BASE = Path(__file__).resolve().parent
@@ -26,7 +26,7 @@ def make_script(topic, lang, style):
         return f"विषय: {topic}\n\nतुम्ही कधी विचार केला आहे का की {topic} महत्त्वाचा का आहे? आज आपण हा विषय सोप्या भाषेत समजून घेऊ. आधी मूलभूत गोष्टी जाणून घ्या, उदाहरणे पाहा आणि निष्कर्षापूर्वी माहिती तपासा. सतत शिकत राहा. व्हिडिओ आवडला तर लाईक आणि सबस्क्राइब करा.", "Offline starter script"
     return f"Title: {topic}\n\nHave you ever wondered why {topic} matters? In this video, we break it down in simple steps. Start with the basics, look at examples, and verify information before drawing conclusions. Stay curious and keep learning. If this helped, like and subscribe.", "Offline starter script (Ollama unavailable)"
 
-def render_video(topic, script, ratio, language="English"):
+def render_video(topic, script, ratio, language="English", background_path=None):
     if not shutil.which("ffmpeg"):
         return None, "FFmpeg is unavailable."
     slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", topic)[:35] or "video"
@@ -36,7 +36,17 @@ def render_video(topic, script, ratio, language="English"):
     size = (720, 1280) if ratio == "9:16" else (1280, 720)
     images = []
     for i, text in enumerate(scenes, 1):
-        image = Image.new("RGB", size, (13, 18, 32))
+        if background_path and Path(background_path).is_file():
+            try:
+                image = ImageOps.fit(Image.open(background_path).convert("RGB"), size, method=Image.Resampling.LANCZOS)
+                shade = Image.new("RGBA", size, (0, 0, 0, 0))
+                shade_draw = ImageDraw.Draw(shade)
+                shade_draw.rectangle((0, size[1]//2-120, size[0], size[1]-80), fill=(0, 0, 0, 155))
+                image = Image.alpha_composite(image.convert("RGBA"), shade).convert("RGB")
+            except Exception:
+                image = Image.new("RGB", size, (13, 18, 32))
+        else:
+            image = Image.new("RGB", size, (13, 18, 32))
         draw = ImageDraw.Draw(image)
         try:
             font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 30)
@@ -112,7 +122,17 @@ def create():
     if not topic:
         return render_template("index.html", error="Enter a topic.")
     script, source = make_script(topic, language, style)
-    output, status = render_video(topic, script, ratio, language)
+    uploaded_image = request.files.get("background_image")
+    background_path = None
+    if uploaded_image and uploaded_image.filename:
+        from werkzeug.utils import secure_filename
+        upload_dir = OUT / "uploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = secure_filename(uploaded_image.filename)
+        if safe_name and Path(safe_name).suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
+            background_path = upload_dir / (str(os.getpid()) + "_" + safe_name)
+            uploaded_image.save(background_path)
+    output, status = render_video(topic, script, ratio, language, background_path)
     video = output.relative_to(OUT).as_posix() if output else None
     return render_template("result.html", topic=topic, script=script, source=source, status=status, video=video)
 
